@@ -46,11 +46,11 @@ pub mod layout_dom;
 pub(crate) mod messaging;
 mod microtask;
 pub(crate) mod mime;
+mod module_loading;
 mod navigation;
 mod network_listener;
 mod realms;
 mod routed_promise;
-#[expect(dead_code)]
 mod script_module;
 mod script_mutation_observers;
 pub(crate) mod script_runtime;
