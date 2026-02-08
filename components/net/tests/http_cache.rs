@@ -109,3 +109,43 @@ async fn test_skip_incomplete_cache_for_range_request_with_no_end_bound() {
         "Should not construct response from incomplete response!"
     );
 }
+
+#[tokio::test]
+async fn test_stale_while_revalidate() {
+    use http::header::CACHE_CONTROL;
+    use std::thread;
+    use std::time::Duration;
+
+    let url = ServoUrl::parse("https://servo.org").unwrap();
+    let request = RequestBuilder::new(None, url.clone(), Referrer::NoReferrer)
+        .pipeline_id(Some(TEST_PIPELINE_ID))
+        .origin(url.origin())
+        .build();
+
+    let cache = HttpCache::default();
+    let timing = ResourceFetchTiming::new(ResourceTimingType::Navigation);
+    let mut response = Response::new(url.clone(), timing);
+
+    // Set Cache-Control with max-age=0 and stale-while-revalidate=10
+    response.headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_str("max-age=0, stale-while-revalidate=10").unwrap(),
+    );
+    *response.body.lock() = ResponseBody::Done(vec![1, 2, 3, 4, 5]);
+
+    // Store the response
+    cache.store(&request, &response).await;
+
+    // Wait a bit to ensure the response expires
+    thread::sleep(Duration::from_millis(100));
+
+    // Try to construct response from cache
+    let mut done_chan = None;
+    let cached_response = cache.construct_response(&request, &mut done_chan).await;
+
+    // Should get a cached response
+    assert!(
+        cached_response.is_some(),
+        "Should construct response with stale-while-revalidate"
+    );
+}

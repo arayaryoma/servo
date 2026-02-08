@@ -1850,6 +1850,11 @@ async fn block_for_cache_ready<'a>(
             // Step 8.25.2 If storedResponse is non-null, then:
             if let Some(response_from_cache) = stored_response {
                 let response_headers = response_from_cache.response.headers.clone();
+                let use_stale_while_revalidate = response_from_cache.use_stale_while_revalidate;
+                log::info!(
+                    "\x1b[36muse_stale_while_revalidate: {}\x1b[0m",
+                    use_stale_while_revalidate
+                );
                 // Substep 1, 2, 3, 4
                 let (cached_response, needs_revalidation) =
                     match (http_request.cache_mode, &http_request.mode) {
@@ -1862,7 +1867,7 @@ async fn block_for_cache_ready<'a>(
                         (CacheMode::Reload, _) => (None, false),
                         (_, _) => (
                             Some(response_from_cache.response),
-                            response_from_cache.needs_validation,
+                            response_from_cache.needs_validation, //&& !use_stale_while_revalidate,
                         ),
                     };
 

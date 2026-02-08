@@ -68,6 +68,7 @@ pub struct CachedResource {
     url_list: Vec<ServoUrl>,
     expires: Duration,
     last_validated: Instant,
+    stale_while_revalidate: Option<Duration>,
 }
 
 impl MallocSizeOf for CachedResource {
@@ -82,7 +83,8 @@ impl MallocSizeOf for CachedResource {
             self.status.size_of(ops) +
             self.url_list.size_of(ops) +
             self.expires.size_of(ops) +
-            self.last_validated.size_of(ops)
+            self.last_validated.size_of(ops) +
+            self.stale_while_revalidate.size_of(ops)
     }
 }
 
@@ -107,6 +109,8 @@ pub(crate) struct CachedResponse {
     pub response: Response,
     /// The revalidation flag for the stored response
     pub needs_validation: bool,
+    /// Whether to use stale-while-revalidate: serve stale content while revalidating
+    pub use_stale_while_revalidate: bool,
 }
 
 type CacheEntry = std::sync::Arc<TokioRwLock<Vec<CachedResource>>>;
@@ -199,6 +203,25 @@ fn calculate_response_age(response: &Response) -> Duration {
         .and_then(|age_string| age_string.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or_default()
+}
+
+fn get_stale_while_revalidate(response: &Response) -> Option<Duration> {
+    let cache_control = response.headers.get(header::CACHE_CONTROL)?;
+    let cache_control_str = cache_control.to_str().ok()?;
+
+    for directive in cache_control_str.split(',') {
+        let directive = directive.trim();
+        if let Some(value) = directive.strip_prefix("stale-while-revalidate=") {
+            if let Ok(seconds) = value.trim().parse::<u64>() {
+                log::info!(
+                    "\x1b[32mFound stale-while-revalidate: {} seconds\x1b[0m",
+                    seconds
+                );
+                return Some(Duration::from_secs(seconds));
+            }
+        }
+    }
+    None
 }
 
 /// Determine the expiry date from relevant headers,
@@ -340,9 +363,27 @@ fn create_cached_response(
     // TODO: if this cache is to be considered shared, take proxy-revalidate into account
     // <https://tools.ietf.org/html/rfc7234#section-5.2.2.7>
     let has_expired = adjusted_expires <= time_since_validated;
+
+    let use_stale_while_revalidate = if has_expired {
+        if let Some(stale_while_revalidate) = cached_resource.stale_while_revalidate {
+            let stale_age = time_since_validated.saturating_sub(adjusted_expires);
+            log::info!(
+                "\x1b[33mChecking stale-while-revalidate: stale_age = {:?}, stale_while_revalidate = {:?}\x1b[0m",
+                stale_age,
+                stale_while_revalidate
+            );
+            stale_age < stale_while_revalidate
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     let cached_response = CachedResponse {
         response,
         needs_validation: has_expired,
+        use_stale_while_revalidate,
     };
     Some(cached_response)
 }
@@ -365,6 +406,7 @@ fn create_resource_with_bytes_from_resource(
         url_list: resource.url_list.clone(),
         expires: resource.expires,
         last_validated: resource.last_validated,
+        stale_while_revalidate: resource.stale_while_revalidate,
     }
 }
 
@@ -914,6 +956,7 @@ impl<'a> CachedResourcesOrGuard<'a> {
             return;
         }
         let expiry = get_response_expiry(response);
+        let stale_while_revalidate = get_stale_while_revalidate(response);
         let cacheable_metadata = CachedMetadata {
             headers: Arc::new(ParkingLotMutex::new(response.headers.clone())),
             final_url: metadata.final_url,
@@ -933,6 +976,7 @@ impl<'a> CachedResourcesOrGuard<'a> {
             url_list: response.url_list.clone(),
             expires: expiry,
             last_validated: Instant::now(),
+            stale_while_revalidate,
         };
 
         match self {
