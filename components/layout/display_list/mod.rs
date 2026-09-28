@@ -29,6 +29,7 @@ use style::computed_values::text_decoration_style::{
     T as ComputedTextDecorationStyle, T as TextDecorationStyle,
 };
 use style::computed_values::text_decoration_thickness::T as TextDecorationThickness;
+use style::device::Device;
 use style::dom::OpaqueNode;
 use style::properties::ComputedValues;
 use style::properties::longhands::visibility::computed_value::T as Visibility;
@@ -134,6 +135,9 @@ pub(crate) struct DisplayListBuilder<'a> {
 
     /// The background color used for the shell.
     shell_background_color: AbsoluteColor,
+
+    /// The Stylo [`Device`], used to resolve the canvas color for the root's color scheme.
+    device: &'a Device,
 }
 
 struct InspectorHighlight {
@@ -185,6 +189,7 @@ impl DisplayListBuilder<'_> {
         debug: &DiagnosticsLogging,
         paint_timing_handler: &mut PaintTimingHandler,
         reflow_statistics: &mut ReflowStatistics,
+        device: &Device,
     ) -> BuiltDisplayList {
         // Build the rest of the display list which inclues all of the WebRender primitives.
         let paint_info = &mut stacking_context_tree.paint_info;
@@ -228,6 +233,7 @@ impl DisplayListBuilder<'_> {
             reflow_statistics,
             largest_contentful_paint_enabled: pref!(largest_contentful_paint_enabled),
             shell_background_color,
+            device,
         };
 
         // Clear any caret color from previous display list constructions.
@@ -952,12 +958,6 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             }
         };
 
-        // This can happen if the root fragment does not have a `<body>` child (either because it is
-        // `display: none` or `display: contents`) or if the `<body>`'s background is transparent.
-        if source_style.background_is_transparent() {
-            return;
-        }
-
         // The painting area is theoretically the infinite 2D plane,
         // but we need a rectangle with finite coordinates.
         //
@@ -969,6 +969,18 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             .initial_containing_block
             .union(&self.fragment_tree.scrollable_overflow())
             .to_webrender();
+
+        // This can happen if the root fragment does not have a `<body>` child (either because it is
+        // `display: none` or `display: contents`) or if the `<body>`'s background is transparent.
+        if source_style.background_is_transparent() {
+            let color_scheme = fragment.style().get_inherited_ui().color_scheme.bits;
+            if self.device.is_dark_color_scheme(color_scheme) {
+                let common = self.common_properties(state, painting_area, fragment.style());
+                let color = rgba(self.device.canvas_background_color(color_scheme));
+                self.wr().push_rect(&common, painting_area, color);
+            }
+            return;
+        }
 
         let background_color =
             source_style.resolve_color(&source_style.get_background().background_color);
